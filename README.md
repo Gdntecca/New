@@ -17,7 +17,6 @@ Super Downloader grabs any file from any link, fast. It splits each download int
 - **Organised storage**: its own Super Downloader folder, sorted into Video, Music, Documents, Archives, Programs, Images and Other.
 - **Full control**: traffic modes (Low, Medium, High, Unlimited), speed limits, connection limits, scheduler, priorities, Wi-Fi-only, proxy and custom user agent.
 - **Extras**: batch downloads, a link grabber for pages, QR code links, checksum checks (MD5 and SHA-256), play while downloading, auto-unzip, a private Face ID or fingerprint folder, a home-screen widget, and download stats.
-- **Premium red and black design**: with dark and light modes, and it runs smoothly on low-end phones.
 
 ## Download
 Get the latest APK (Android) and IPA (iPhone) from the **Releases** page.
