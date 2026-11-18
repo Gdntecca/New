@@ -2,8 +2,6 @@
 
 **A free, open-source download manager for everyone.** For Android and iPhone.
 
-Created by Tez.
-
 ## What it does
 
 Super Downloader grabs any file from any link, fast. It splits each download into several pieces and pulls them at the same time, so big files finish much quicker than in a normal browser.
