@@ -24,10 +24,12 @@ object Status {
 }
 
 object Priority {
+    const val SNAIL = -1
     const val LOW = 0
     const val NORMAL = 1
     const val HIGH = 2
-    fun label(p: Int) = when (p) { LOW -> "Low"; HIGH -> "High"; else -> "Normal" }
+    val all = listOf(HIGH, NORMAL, LOW, SNAIL)
+    fun label(p: Int) = when (p) { SNAIL -> "Snail"; LOW -> "Low"; HIGH -> "High"; else -> "Normal" }
 }
 
 @Entity(tableName = "downloads", indices = [Index("url")])
@@ -63,6 +65,9 @@ data class DownloadEntity(
     val peakSpeed: Long = 0,
     val speedLimitKbps: Int = 0,
     val log: String = "",
+    val etag: String? = null,
+    val lastModified: String? = null,
+    val serverName: String? = null,
 ) {
     val progress: Float
         get() = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f

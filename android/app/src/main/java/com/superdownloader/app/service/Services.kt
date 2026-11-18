@@ -113,7 +113,7 @@ class DownloadService : Service() {
                 DownloadTileService.requestUpdate(this)
             }
             if (ids.isEmpty()) {
-                if (++idleTicks >= 4) {
+                if (++idleTicks >= 2) {
                     val pending = engine.dao.pendingCount()
                     if (pending > 0) RestoreWorker.enqueue(this, app.settings.value.wifiOnly)
                     WidgetUpdater.push(this, 0, 0, 0)

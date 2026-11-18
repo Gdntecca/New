@@ -44,7 +44,25 @@ data class SettingsState(
     val scheduleStart: Int = 2 * 60,
     val scheduleStop: Int = 8 * 60,
     val notifySound: Boolean = true,
+    val lowCapKbps: Int = 1024,
+    val snailCapKbps: Int = 128,
+    val lowConnections: Int = 2,
+    val snailConnections: Int = 1,
 ) {
+    /** Per-download cap for a priority in bytes/s; 0 = uncapped (High and Normal). */
+    fun priorityCap(p: Int): Long = when (p) {
+        Priority.LOW -> lowCapKbps.toLong().coerceAtLeast(1) * 1024
+        Priority.SNAIL -> snailCapKbps.toLong().coerceAtLeast(1) * 1024
+        else -> 0L
+    }
+
+    /** Max connections allowed by a priority; Int.MAX_VALUE = no extra limit. */
+    fun priorityConnections(p: Int): Int = when (p) {
+        Priority.LOW -> lowConnections.coerceIn(1, 16)
+        Priority.SNAIL -> snailConnections.coerceIn(1, 16)
+        else -> Int.MAX_VALUE
+    }
+
     /** Bytes per second; 0 = unlimited. */
     fun limitBytesPerSec(): Long = when (trafficMode) {
         TrafficMode.LOW -> 256L * 1024
@@ -93,6 +111,10 @@ class AppSettings(ctx: Context) {
             scheduleStart = p.getInt("scheduleStart", d.scheduleStart),
             scheduleStop = p.getInt("scheduleStop", d.scheduleStop),
             notifySound = p.getBoolean("notifySound", d.notifySound),
+            lowCapKbps = p.getInt("lowCapKbps", d.lowCapKbps),
+            snailCapKbps = p.getInt("snailCapKbps", d.snailCapKbps),
+            lowConnections = p.getInt("lowConnections", d.lowConnections),
+            snailConnections = p.getInt("snailConnections", d.snailConnections),
         )
     }
 
@@ -121,6 +143,10 @@ class AppSettings(ctx: Context) {
             .putInt("scheduleStart", s.scheduleStart)
             .putInt("scheduleStop", s.scheduleStop)
             .putBoolean("notifySound", s.notifySound)
+            .putInt("lowCapKbps", s.lowCapKbps)
+            .putInt("snailCapKbps", s.snailCapKbps)
+            .putInt("lowConnections", s.lowConnections)
+            .putInt("snailConnections", s.snailConnections)
             .apply()
     }
 }

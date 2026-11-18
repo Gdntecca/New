@@ -53,6 +53,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -213,11 +214,34 @@ fun BrowserScreen(vm: MainViewModel, startUrl: String?, onBack: () -> Unit) {
                     settings.useWideViewPort = true
                     settings.builtInZoomControls = true
                     settings.displayZoomControls = false
+                    @Suppress("DEPRECATION")
+                    settings.databaseEnabled = true
+                    settings.javaScriptCanOpenWindowsAutomatically = true
+                    settings.setSupportMultipleWindows(true)
+                    settings.mediaPlaybackRequiresUserGesture = true
+                    // A normal Chrome-mobile UA: the WebView token is removed so sites treat it as a browser.
+                    settings.userAgentString = settings.userAgentString.replace("; wv", "").replace(" Version/4.0", "")
                     CookieManager.getInstance().setAcceptCookie(true)
                     CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                     addJavascriptInterface(bridge, "SDBridge")
                     webChromeClient = object : android.webkit.WebChromeClient() {
                         override fun onProgressChanged(view: WebView, newProgress: Int) { progress = newProgress }
+
+                        // Pop-up windows (some sign-in and verification pages use them) open in this view.
+                        override fun onCreateWindow(view: WebView, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message): Boolean {
+                            val child = WebView(view.context)
+                            child.webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(v: WebView, request: WebResourceRequest): Boolean {
+                                    view.loadUrl(request.url.toString())
+                                    v.destroy()
+                                    return true
+                                }
+                            }
+                            val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                            transport.webView = child
+                            resultMsg.sendToTarget()
+                            return true
+                        }
                     }
                     webViewClient = object : WebViewClient() {
                         override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
@@ -227,6 +251,7 @@ fun BrowserScreen(vm: MainViewModel, startUrl: String?, onBack: () -> Unit) {
 
                         override fun onPageFinished(view: WebView, url: String) {
                             canBack = view.canGoBack(); canForward = view.canGoForward()
+                            CookieManager.getInstance().flush()
                         }
 
                         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -267,24 +292,10 @@ fun BrowserScreen(vm: MainViewModel, startUrl: String?, onBack: () -> Unit) {
         )
     }
 
-    capture?.let { c ->
-        AlertDialog(
-            onDismissRequest = { capture = null },
-            title = { Text("Download this file?") },
-            text = { Text(c.name.ifBlank { c.url }, maxLines = 4, overflow = TextOverflow.Ellipsis) },
-            confirmButton = {
-                TextButton({
-                    vm.addAll(listOf(AddRequest(url = c.url, fileName = c.name, cookies = c.cookies, userAgent = c.ua, referer = c.referer)))
-                    capture = null
-                }) { Text("Download") }
-            },
-            dismissButton = {
-                TextButton({
-                    vm.prefill.value = AddPrefill(c.url, referer = c.referer, cookies = c.cookies, userAgent = c.ua, fileName = c.name)
-                    capture = null
-                }) { Text("Options…") }
-            },
-        )
+    LaunchedEffect(capture) {
+        val c = capture ?: return@LaunchedEffect
+        vm.startFromBrowser(AddRequest(url = c.url, fileName = c.name, cookies = c.cookies, userAgent = c.ua, referer = c.referer))
+        capture = null
     }
 
     grabbed?.let { links ->

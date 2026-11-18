@@ -22,6 +22,14 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** A brief snackbar, optionally with one action (e.g. Undo). */
+data class UiEvent(
+    val message: String,
+    val actionLabel: String? = null,
+    val onAction: (() -> Unit)? = null,
+    val onDismiss: (() -> Unit)? = null,
+)
+
 data class AddPrefill(
     val urls: String,
     val referer: String? = null,
@@ -41,6 +49,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val prefill = MutableStateFlow<AddPrefill?>(null)
     val clipboardOffer = MutableStateFlow<String?>(null)
     val toast = MutableStateFlow<String?>(null)
+    val event = MutableStateFlow<UiEvent?>(null)
+    val hidden = MutableStateFlow<Set<Long>>(emptySet())
+    val needPermissions = MutableStateFlow(false)
+    val changeLinkFor = MutableStateFlow<Long?>(null)
     val privateUnlocked = MutableStateFlow(false)
     private var lastClipboard: String? = null
 
@@ -66,9 +78,61 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun addAll(requests: List<AddRequest>) {
+        if (requests.isEmpty()) return
+        needPermissions.value = true
         viewModelScope.launch {
             requests.forEach { engine.add(it) }
             toast.value = if (requests.size == 1) "Download added" else "${requests.size} downloads added"
+        }
+    }
+
+    /** Removes the entry from the list only (file stays). Undo is offered in a snackbar. */
+    fun removeFromList(e: DownloadEntity) {
+        hidden.value = hidden.value + e.id
+        if (e.status == com.superdownloader.app.data.Status.DOWNLOADING) engine.pause(e.id)
+        event.value = UiEvent(
+            message = "Removed ${e.fileName.ifBlank { "download" }}",
+            actionLabel = "Undo",
+            onAction = { hidden.value = hidden.value - e.id },
+            onDismiss = {
+                if (e.id in hidden.value) viewModelScope.launch { engine.delete(e.id, withFile = false); hidden.value = hidden.value - e.id }
+            },
+        )
+    }
+
+    /** Checks a replacement link against what is known about the download. */
+    fun checkLink(e: DownloadEntity, url: String, headers: String, onResult: (com.superdownloader.app.engine.LinkMatch?, com.superdownloader.app.engine.RemoteInfo?, String?) -> Unit) {
+        viewModelScope.launch {
+            val r = runCatching { engine.inspect(url, e.copy(headers = headers)) }
+            r.onSuccess { info -> onResult(com.superdownloader.app.engine.LinkMatcher.match(engine.knownInfo(e), info), info, null) }
+                .onFailure { onResult(null, null, it.message ?: "Could not reach this link") }
+        }
+    }
+
+    fun applyLink(id: Long, url: String, headers: String, info: com.superdownloader.app.engine.RemoteInfo?, restart: Boolean) {
+        viewModelScope.launch {
+            engine.changeLink(id, url, headers, info, restart)
+            toast.value = if (restart) "Restarting with the new link" else "Link changed, resuming"
+        }
+    }
+
+    /** From the browser: start a download, or offer to resume a matching failed one. */
+    fun startFromBrowser(req: AddRequest) {
+        needPermissions.value = true
+        viewModelScope.launch {
+            val name = req.fileName.ifBlank { com.superdownloader.app.engine.FileTypes.nameFromUrl(req.url) ?: "" }
+            val info = runCatching { engine.inspect(req.url, com.superdownloader.app.data.DownloadEntity(url = req.url, cookies = req.cookies, userAgent = req.userAgent, referer = req.referer)) }.getOrNull()
+            val match = if (info != null) engine.findResumable(info.fileName ?: name, info) ?: engine.findResumable(name, info) else null
+            if (match != null && info != null) {
+                event.value = UiEvent(
+                    message = "Use this link to resume ${match.fileName}?",
+                    actionLabel = "Resume",
+                    onAction = { applyLink(match.id, req.url, match.headers, info, restart = false) },
+                )
+            } else {
+                engine.add(req)
+                event.value = UiEvent("Downloading ${name.ifBlank { "file" }}")
+            }
         }
     }
 

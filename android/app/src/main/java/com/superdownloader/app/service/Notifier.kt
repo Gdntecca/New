@@ -60,6 +60,14 @@ class Notifier(private val ctx: Context) {
         return PendingIntent.getActivity(ctx, (downloadId % 100000).toInt() + 10, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 
+    private fun changeLinkIntent(downloadId: Long): PendingIntent {
+        val i = Intent(ctx, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("change_link", downloadId)
+        }
+        return PendingIntent.getActivity(ctx, (downloadId % 100000).toInt() + 300000, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    }
+
     private fun action(action: String, id: Long): PendingIntent {
         val i = Intent(ctx, NotificationActionReceiver::class.java).setAction(action).putExtra("id", id)
         return PendingIntent.getBroadcast(ctx, (id % 100000).toInt() * 4 + action.hashCode() % 4, i, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -161,6 +169,7 @@ class Notifier(private val ctx: Context) {
             .setAutoCancel(true)
             .setContentIntent(openAppIntent(e.id))
             .addAction(0, "Retry", action(NotificationActionReceiver.RESUME, e.id))
+            .apply { if (com.superdownloader.app.engine.LinkMatcher.looksExpired(e.error)) addAction(0, "Change link", changeLinkIntent(e.id)) }
             .build()
         notify(doneId(e.id), n)
     }

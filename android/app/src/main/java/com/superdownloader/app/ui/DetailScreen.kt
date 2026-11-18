@@ -27,6 +27,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -79,7 +81,8 @@ fun DetailScreen(vm: MainViewModel, id: Long, onBack: () -> Unit, push: (Screen)
     val liveMap by vm.live.collectAsStateWithLifecycle()
     val e = entity
     var tab by rememberSaveable { mutableStateOf(0) }
-    var confirmDelete by remember { mutableStateOf(false) }
+    var confirmDeleteFile by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
     var storedSegs by remember { mutableStateOf<List<SegInfo>>(emptyList()) }
     LaunchedEffect(id, e?.status) {
         storedSegs = vm.segments(id).mapIndexed { i, s -> SegInfo(s.start, s.end, s.downloaded, false, 0, i + 1) }
@@ -104,7 +107,10 @@ fun DetailScreen(vm: MainViewModel, id: Long, onBack: () -> Unit, push: (Screen)
                         Status.FAILED -> IconButton({ vm.resume(id) }) { Icon(Icons.Filled.Refresh, "Retry") }
                     }
                     if (e.status == Status.COMPLETED) IconButton({ shareFile(ctx, vm, e) }) { Icon(Icons.Filled.Share, "Share") }
-                    IconButton({ confirmDelete = true }) { Icon(Icons.Filled.Delete, "Delete") }
+                    Box {
+                        IconButton({ menu = true }) { Icon(Icons.Filled.MoreVert, "Options") }
+                        DownloadMenu(vm, e, menu, onDismiss = { menu = false }, onDeleteFile = { confirmDeleteFile = true }, push = push)
+                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
@@ -133,6 +139,16 @@ fun DetailScreen(vm: MainViewModel, id: Long, onBack: () -> Unit, push: (Screen)
                 Spacer(Modifier.width(14.dp))
                 Text(e.fileName.ifBlank { e.url }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 8.dp)) {
+                when (e.status) {
+                    Status.DOWNLOADING, Status.QUEUED, Status.WAITING -> FilledTonalButton({ vm.pause(id) }) { Icon(Icons.Filled.Pause, null); Spacer(Modifier.width(6.dp)); Text("Pause") }
+                    Status.PAUSED -> FilledTonalButton({ vm.resume(id) }) { Icon(Icons.Filled.PlayArrow, null); Spacer(Modifier.width(6.dp)); Text("Resume") }
+                    Status.FAILED -> FilledTonalButton({ vm.resume(id) }) { Icon(Icons.Filled.Refresh, null); Spacer(Modifier.width(6.dp)); Text("Retry") }
+                }
+                if (e.status != Status.COMPLETED) OutlinedButton({ vm.changeLinkFor.value = id }) {
+                    Text(if (e.status == Status.FAILED && com.superdownloader.app.engine.LinkMatcher.looksExpired(e.error)) "Link expired? Change link" else "Change link")
+                }
+            }
             when (tab) {
                 0 -> InfoTab(vm, e, ls, segs, push)
                 1 -> ConnectionsTab(e, ls, segs)
@@ -145,7 +161,8 @@ fun DetailScreen(vm: MainViewModel, id: Long, onBack: () -> Unit, push: (Screen)
             Spacer(Modifier.height(24.dp))
         }
     }
-    if (confirmDelete) DeleteDialog(e, { confirmDelete = false }) { withFile -> vm.delete(id, withFile); onBack() }
+    if (confirmDeleteFile) DeleteFileDialog(e, { confirmDeleteFile = false }) { vm.delete(id, true); onBack() }
+    LaunchedEffect(vm.hidden.collectAsState().value) { if (id in vm.hidden.value) onBack() }
 }
 
 @Composable
@@ -187,9 +204,10 @@ private fun InfoTab(vm: MainViewModel, e: DownloadEntity, ls: LiveStats?, segs: 
         IconButton({ copy(e.url) }) { Icon(Icons.Filled.ContentCopy, "Copy link") }
     })
     Box {
-        InfoRow("Priority", Priority.label(e.priority), onClick = { prioMenu = true })
+        val cap = vm.settings.value.priorityCap(e.priority)
+        InfoRow("Priority", Priority.label(e.priority) + if (cap > 0) " · capped at ${Fmt.speed(cap)}" else " · full speed", onClick = { prioMenu = true })
         DropdownMenu(prioMenu, { prioMenu = false }) {
-            listOf(Priority.HIGH, Priority.NORMAL, Priority.LOW).forEach { p ->
+            Priority.all.forEach { p ->
                 DropdownMenuItem({ Text(Priority.label(p)) }, { vm.setPriority(e.id, p); prioMenu = false })
             }
         }

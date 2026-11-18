@@ -73,23 +73,6 @@ fun AddDialog(vm: MainViewModel, prefill: AddPrefill, onDismiss: () -> Unit) {
         )
     }
 
-    if (dupes.isNotEmpty()) {
-        AlertDialog(
-            onDismissRequest = { dupes = emptyList() },
-            title = { Text("Already in your list") },
-            text = { Text("${dupes.size} of these link(s) were downloaded or added before. Add them again?") },
-            confirmButton = { TextButton({ vm.addAll(build(parsed)); dupes = emptyList(); onDismiss() }) { Text("Add again") } },
-            dismissButton = {
-                TextButton({
-                    val fresh = parsed.filter { it !in dupes }
-                    if (fresh.isNotEmpty()) vm.addAll(build(fresh))
-                    dupes = emptyList(); onDismiss()
-                }) { Text("Skip duplicates") }
-            },
-        )
-        return
-    }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Add download") },
@@ -110,6 +93,16 @@ fun AddDialog(vm: MainViewModel, prefill: AddPrefill, onDismiss: () -> Unit) {
                     }) { Text("Paste") }
                     TextButton({ advanced = !advanced }) { Text(if (advanced) "Hide options" else "More options") }
                 }
+                if (dupes.isNotEmpty()) {
+                    Text("${dupes.size} link(s) are already in your list.", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+                    Row {
+                        TextButton({ vm.addAll(build(parsed)); onDismiss() }) { Text("Add again") }
+                        TextButton({
+                            val fresh = parsed.filter { it !in dupes }
+                            vm.addAll(build(fresh)); onDismiss()
+                        }) { Text("Skip duplicates") }
+                    }
+                }
                 if (parsed.size <= 1) {
                     OutlinedTextField(fileName, { fileName = it }, label = { Text("File name (optional)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 }
@@ -127,7 +120,7 @@ fun AddDialog(vm: MainViewModel, prefill: AddPrefill, onDismiss: () -> Unit) {
                     }
                     Text("Priority", style = MaterialTheme.typography.labelLarge)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(Priority.HIGH, Priority.NORMAL, Priority.LOW).forEach { p ->
+                        Priority.all.forEach { p ->
                             FilterChip(priority == p, { priority = p }, label = { Text(Priority.label(p)) })
                         }
                     }

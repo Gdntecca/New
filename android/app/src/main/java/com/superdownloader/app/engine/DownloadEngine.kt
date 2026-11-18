@@ -147,7 +147,7 @@ class DownloadEngine(
     }
 
     fun effectiveParts(s: SettingsState = settings.value): Int = if (isLowRam) s.parts.coerceIn(1, 4) else s.parts.coerceIn(1, 16)
-    fun effectiveSimultaneous(s: SettingsState = settings.value): Int = if (isLowRam) s.maxSimultaneous.coerceIn(1, 2) else s.maxSimultaneous.coerceIn(1, 10)
+    fun effectiveSimultaneous(s: SettingsState = settings.value): Int = if (isLowRam) s.maxSimultaneous.coerceIn(1, 2) else s.maxSimultaneous.coerceAtLeast(1)
     fun effectivePerServer(s: SettingsState = settings.value): Int = if (isLowRam) s.maxPerServer.coerceIn(1, 4) else s.maxPerServer.coerceIn(1, 16)
 
     fun hostSemaphore(host: String): Semaphore = hostSems.getOrPut(host) { Semaphore(hostSemSize) }
@@ -158,7 +158,9 @@ class DownloadEngine(
         runCatching { dao.resetActive() }
         while (true) {
             try { schedule() } catch (t: Throwable) { Log.w("SD", "schedule", t) }
-            withTimeoutOrNull(3000) { kickCh.receive() }
+            // Event-driven: sleep until something changes. Only the scheduler needs a clock,
+            // and then only to wake at the next minute boundary.
+            if (settings.value.scheduleEnabled) withTimeoutOrNull(60_000) { kickCh.receive() } else kickCh.receive()
         }
     }
 
@@ -301,14 +303,21 @@ class DownloadEngine(
         tasks[id]?.let { it.stop(DownloadTask.STOP_DELETE); it.job?.join() }
         val e = dao.get(id) ?: return
         if (withFile) e.outputUri?.let { output.delete(Uri.parse(it)) }
-        else if (e.status != Status.COMPLETED) e.outputUri?.let { output.delete(Uri.parse(it)) }
         dao.clearSegments(id)
         dao.delete(id)
         notifier.cancelProgress(id)
         notifier.cancelDone(id)
     }
 
-    fun setPriority(id: Long, p: Int) { scope.launch { dao.setPriority(id, p); kick() } }
+    private val priorities = ConcurrentHashMap<Long, Int>()
+
+    /** Live priority of a download (changes apply to a running task without restart). */
+    fun priorityOf(id: Long, fallback: Int): Int = priorities[id] ?: fallback
+
+    fun setPriority(id: Long, p: Int) {
+        priorities[id] = p
+        scope.launch { dao.setPriority(id, p); kick() }
+    }
 
     /** Moves an item up (-1) or down (+1) in the queue order. */
     fun move(id: Long, dir: Int) {
@@ -349,6 +358,70 @@ class DownloadEngine(
         notifier.completed(e.copy(id = id))
         return id
     }
+
+
+    /** Per-item live stats, so one row recomposes on its own progress tick. */
+    fun liveFlow(id: Long): kotlinx.coroutines.flow.Flow<LiveStats?> = live.map { it[id] }.distinctUntilChanged()
+
+    /** Asks the server about a link: HEAD first, then a one-byte range GET. */
+    suspend fun inspect(url: String, base: DownloadEntity): RemoteInfo = kotlinx.coroutines.withContext(Dispatchers.IO) {
+        val probeEntity = base.copy(url = url)
+        val head = runCatching {
+            client.newCall(requestBuilder(probeEntity, url).head().build()).execute().use { r ->
+                if (!r.isSuccessful) throw HttpStatusException(r.code)
+                RemoteInfo(
+                    total = r.header("Content-Length")?.toLongOrNull() ?: -1L,
+                    etag = r.header("ETag"), lastModified = r.header("Last-Modified"),
+                    fileName = FileTypes.parseContentDisposition(r.header("Content-Disposition")),
+                    supportsRange = r.header("Accept-Ranges")?.contains("bytes", true) == true,
+                    finalUrl = r.request.url.toString(),
+                )
+            }
+        }.getOrNull()
+        if (head != null && head.total > 0) return@withContext head
+        client.newCall(requestBuilder(probeEntity, url).header("Range", "bytes=0-0").build()).execute().use { r ->
+            if (!r.isSuccessful) throw HttpStatusException(r.code)
+            val total = if (r.code == 206) LinkMatcher.totalFromContentRange(r.header("Content-Range")) else (r.body?.contentLength() ?: -1L)
+            RemoteInfo(
+                total = total, etag = r.header("ETag") ?: head?.etag, lastModified = r.header("Last-Modified") ?: head?.lastModified,
+                fileName = FileTypes.parseContentDisposition(r.header("Content-Disposition")) ?: head?.fileName,
+                supportsRange = r.code == 206, finalUrl = r.request.url.toString(),
+            )
+        }
+    }
+
+    fun knownInfo(e: DownloadEntity) = RemoteInfo(e.totalBytes, e.etag, e.lastModified, e.serverName ?: e.fileName.ifBlank { null }, e.supportsRange)
+
+    /**
+     * Swaps the link of a download. With restart = false the existing pieces are kept and the
+     * download continues from its saved offsets; with restart = true it starts again from zero.
+     */
+    suspend fun changeLink(id: Long, newUrl: String, headers: String, info: RemoteInfo?, restart: Boolean) {
+        val running = tasks[id]
+        if (running != null) { running.stop(DownloadTask.STOP_PAUSE); running.job?.join() }
+        val e = dao.get(id) ?: return
+        val log = (e.log + logLine(if (restart) "Link changed; restarting from zero" else "Link changed; resuming from ${Fmt.bytes(e.downloadedBytes)}")).takeLast(8000)
+        if (restart) {
+            e.outputUri?.let { output.delete(Uri.parse(it)) }
+            dao.clearSegments(id)
+            dao.update(e.copy(url = newUrl, headers = headers, outputUri = null, downloadedBytes = 0, totalBytes = -1,
+                status = Status.QUEUED, error = null, etag = null, lastModified = null, serverName = null, log = log))
+        } else {
+            dao.update(e.copy(url = newUrl, headers = headers, status = Status.QUEUED, error = null,
+                etag = info?.etag ?: e.etag, lastModified = info?.lastModified ?: e.lastModified, log = log))
+        }
+        notifier.cancelDone(id)
+        ensureService()
+        kick()
+    }
+
+    /** A failed or paused download that a freshly captured link could resume. */
+    suspend fun findResumable(name: String, info: RemoteInfo): DownloadEntity? =
+        dao.all().firstOrNull { e ->
+            (e.status == Status.FAILED || e.status == Status.PAUSED) && e.totalBytes > 0 &&
+                (e.fileName.equals(name, true) || e.serverName?.equals(name, true) == true) &&
+                LinkMatcher.match(knownInfo(e), info) == LinkMatch.SAME
+        }
 
     companion object {
         const val DEFAULT_UA = "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Mobile Safari/537.36"

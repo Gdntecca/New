@@ -36,7 +36,7 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
         const val STOP_WAIT = 2
         const val STOP_DELETE = 3
         const val STOP_CANCEL = 4
-        private const val BUF = 64 * 1024
+        private const val BUF = 256 * 1024
         private const val MIN_SPLIT = 2L * 1024 * 1024
         private const val MIN_PART = 512L * 1024
         private const val SEQ_CHUNK = 2L * 1024 * 1024
@@ -47,8 +47,8 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
         var lastSample = 0L
         var speed = 0L
         var conn = 0
-        fun pos() = start + downloaded
-        fun remaining(): Long = if (end < 0) Long.MAX_VALUE else end - pos() + 1
+        fun pos() = SegmentPlanner.resumeFrom(start, downloaded)
+        fun remaining(): Long = SegmentPlanner.remaining(start, downloaded, end)
     }
 
     var job: Job? = null
@@ -78,6 +78,27 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
         job?.cancel()
     }
 
+    private fun currentPriority(): Int = engine.priorityOf(id, if (::entity.isInitialized) entity.priority else 1)
+
+    /** Max workers right now: the download's own setting, narrowed by Low/Snail priority. */
+    private fun allowedWorkers(): Int {
+        val s = engine.settings.value
+        val own = if (::entity.isInitialized) entity.maxConnections.coerceIn(1, 16) else 16
+        return minOf(own, s.priorityConnections(currentPriority()), engine.effectivePerServer(s))
+    }
+
+    private fun applyPriority() {
+        val p = currentPriority()
+        val cap = engine.settings.value.priorityCap(p)
+        val own = if (::entity.isInitialized) entity.speedLimitKbps * 1024L else 0L
+        limiter.bytesPerSec = if (cap > 0 && own > 0) minOf(cap, own) else maxOf(cap, own)
+    }
+
+    /** Lets one worker leave when Low/Snail lowered the connection count. */
+    private fun tryShed(): Boolean = synchronized(lock) {
+        if (activeWorkers.get() > allowedWorkers()) { activeWorkers.decrementAndGet(); true } else false
+    }
+
     private fun log(msg: String) { synchronized(logBuf) { logBuf.append(DownloadEngine.logLine(msg)) } }
 
     private suspend fun flushLog() {
@@ -92,7 +113,7 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
     suspend fun run() {
         val dao = engine.dao
         var e = dao.get(id) ?: return
-        val s = engine.settings.value
+        entity = e
         e = e.copy(status = Status.DOWNLOADING, error = null)
         dao.update(e)
         baseElapsed = e.elapsedMs
@@ -108,12 +129,12 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
             total = e.totalBytes
             sequential = e.sequential && supportsRange && total > 0
             fetchUrl = e.url
-            limiter.bytesPerSec = e.speedLimitKbps * 1024L
+            applyPriority()
             handle = engine.output.openWrite(Uri.parse(e.outputUri))
             try {
                 loadSegments(e)
                 if (total > 0 && downloadedNow() == 0L) handle.setLength(total)
-                val workers = if (supportsRange && total > 0) e.maxConnections.coerceIn(1, 16) else 1
+                val workers = if (supportsRange && total > 0) allowedWorkers() else 1
                 log("Using $workers connection(s)" + if (supportsRange) "" else " (server has no range support)")
                 coroutineScope {
                     repeat(workers) { spawnWorker(this) }
@@ -160,23 +181,20 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
             fileName = created.name, mimeType = r.mime, category = r.category,
             totalBytes = probe.total, supportsRange = probe.range,
             outputUri = created.uri.toString(), savedIn = created.location, warning = warning,
+            etag = probe.etag, lastModified = probe.lastModified, serverName = FileTypes.parseContentDisposition(probe.cd),
         )
         dao.update(e)
         val list = ArrayList<SegmentEntity>()
         if (probe.range && probe.total > 0 && !e.sequential) {
-            val n = minOf(e.maxConnections.toLong(), maxOf(1L, probe.total / MIN_PART)).toInt().coerceAtLeast(1)
-            val size = probe.total / n
-            for (i in 0 until n) {
-                val st = i * size
-                val en = if (i == n - 1) probe.total - 1 else st + size - 1
-                list.add(SegmentEntity(downloadId = id, start = st, end = en, downloaded = 0))
+            SegmentPlanner.initialSplit(probe.total, allowedWorkers(), MIN_PART).forEach {
+                list.add(SegmentEntity(downloadId = id, start = it.start, end = it.end, downloaded = 0))
             }
         }
         dao.replaceSegments(id, list)
         return e
     }
 
-    private data class Probe(val finalUrl: String, val range: Boolean, val total: Long, val cd: String?, val ct: String?, val head: ByteArray, val headLen: Int)
+    private data class Probe(val finalUrl: String, val range: Boolean, val total: Long, val cd: String?, val ct: String?, val head: ByteArray, val headLen: Int, val etag: String?, val lastModified: String?)
 
     private suspend fun probe(e: DownloadEntity): Probe = withContext(kotlinx.coroutines.Dispatchers.IO) {
         val req = engine.requestBuilder(e, e.url).header("Range", "bytes=0-").build()
@@ -202,7 +220,7 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
                     if (k == -1) break
                     n += k
                 }
-                Probe(r.request.url.toString(), range, size, r.header("Content-Disposition"), r.header("Content-Type"), head, n)
+                Probe(r.request.url.toString(), range, size, r.header("Content-Disposition"), r.header("Content-Type"), head, n, r.header("ETag"), r.header("Last-Modified"))
             }
         } finally { calls.remove(call) }
     }
@@ -226,13 +244,15 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
     private fun spawnWorker(scope: CoroutineScope) {
         activeWorkers.incrementAndGet()
         scope.launch {
+            var shed = false
             try {
                 while (true) {
                     currentCoroutineContext().ensureActive()
                     val seg = nextSegment() ?: break
-                    try { downloadWithRetry(seg) } finally { synchronized(lock) { seg.active = false; seg.speed = 0 } }
+                    try { shed = downloadWithRetry(seg) } finally { synchronized(lock) { seg.active = false; seg.speed = 0 } }
+                    if (shed) break
                 }
-            } finally { activeWorkers.decrementAndGet() }
+            } finally { if (!shed) activeWorkers.decrementAndGet() }
         }
     }
 
@@ -250,8 +270,7 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
         }
         if (!supportsRange || total <= 0) return null
         val victim = segs.filter { it.active && it.end >= 0 }.maxByOrNull { it.remaining() } ?: return null
-        if (victim.remaining() < MIN_SPLIT) return null
-        val mid = victim.pos() + victim.remaining() / 2
+        val mid = SegmentPlanner.stealPoint(victim.start, victim.downloaded, victim.end, MIN_SPLIT) ?: return null
         val ns = Seg(mid, victim.end, 0).also { it.active = true; it.conn = connCounter.incrementAndGet() }
         victim.end = mid - 1
         segs.add(ns)
@@ -259,13 +278,13 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
       }
     }
 
-    private suspend fun downloadWithRetry(seg: Seg) {
+    /** Returns true when this worker was shed because the priority lowered the connection count. */
+    private suspend fun downloadWithRetry(seg: Seg): Boolean {
         var attempt = 0
         while (true) {
-            if (seg.end >= 0 && seg.remaining() <= 0) return
+            if (seg.end >= 0 && seg.remaining() <= 0) return false
             try {
-                fetch(seg)
-                return
+                return fetch(seg)
             } catch (c: CancellationException) {
                 throw c
             } catch (e: IOException) {
@@ -286,12 +305,12 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
         }
     }
 
-    private suspend fun fetch(seg: Seg) {
+    private suspend fun fetch(seg: Seg): Boolean {
         val from = seg.pos()
+        var shed = false
         val rb = engine.requestBuilder(entity, fetchUrl)
         if (supportsRange) {
-            val end = seg.end
-            rb.header("Range", if (end >= 0) "bytes=$from-$end" else "bytes=$from-")
+            rb.header("Range", SegmentPlanner.rangeHeader(seg.start, from - seg.start, seg.end))
         }
         val req = rb.build()
         engine.hostSemaphore(req.url.host).withPermit {
@@ -308,12 +327,21 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
                     val bb = ByteBuffer.wrap(buf)
                     while (true) {
                         if (stopReason != STOP_NONE) throw CancellationException("stopped")
+                        if (supportsRange && activeWorkers.get() > allowedWorkers() && tryShed()) { shed = true; break }
                         val want = synchronized(lock) {
                             if (seg.end >= 0) minOf(BUF.toLong(), seg.end - seg.pos() + 1) else BUF.toLong()
                         }.toInt()
                         if (want <= 0) break
-                        val n = src.read(buf, 0, want)
-                        if (n == -1) {
+                        // Fill a large buffer before each write: fewer syscalls, less battery.
+                        var n = 0
+                        var eof = false
+                        while (n < want) {
+                            val k = src.read(buf, n, want - n)
+                            if (k == -1) { eof = true; break }
+                            n += k
+                            if (src.buffer.size == 0L && n >= 64 * 1024) break
+                        }
+                        if (n == 0 && eof) {
                             if (seg.end >= 0) throw IOException("Connection closed early")
                             break
                         }
@@ -328,11 +356,15 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
                         var off = 0
                         while (bb.hasRemaining()) off += handle.channel.write(bb, pos + off)
                         synchronized(lock) { seg.downloaded += allowed }
-                        if (allowed < n) break
+                        if (allowed < n || eof) {
+                            if (eof && seg.end >= 0 && seg.remaining() > 0) throw IOException("Connection closed early")
+                            break
+                        }
                     }
                 }
             } finally { calls.remove(call) }
         }
+        return shed
     }
 
     private suspend fun tick(scope: CoroutineScope) {
@@ -373,11 +405,17 @@ class DownloadTask(private val engine: DownloadEngine, val id: Long) {
                 segInfo.count { it.active }, segInfo, history.toList()))
             if (now - lastPersist >= 2000) { persist(); flushLog(); lastPersist = now }
 
-            // Adaptive connections: add one while total throughput keeps rising.
+            applyPriority()
             val s = engine.settings.value
+            val allowed = allowedWorkers()
+            if (supportsRange && total > 0 && total - bytes > MIN_SPLIT) {
+                val base = minOf(allowed, if (::entity.isInitialized) entity.maxConnections else allowed)
+                while (activeWorkers.get() < base) spawnWorker(scope)
+            }
+            // Adaptive connections: add one while total throughput keeps rising.
             if (s.adaptive && !adaptStopped && supportsRange && total > 0 && now - lastAdapt >= 3000) {
                 lastAdapt = now
-                val cap = engine.effectivePerServer(s)
+                val cap = minOf(engine.effectivePerServer(s), s.priorityConnections(currentPriority()))
                 val remaining = total - bytes
                 if (activeWorkers.get() < cap && remaining > 4 * MIN_SPLIT) {
                     if (adaptBaseline == 0.0 || ema > adaptBaseline * 1.10) {

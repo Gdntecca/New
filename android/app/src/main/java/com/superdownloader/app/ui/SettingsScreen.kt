@@ -146,10 +146,30 @@ fun SettingsScreen(vm: MainViewModel, onBack: () -> Unit) {
                     )
                 }
             }
+            Section("Data-saver priorities") {
+                Text("High and Normal run at full speed. Low and Snail are capped per download, for limited data plans.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
+                OutlinedTextField(
+                    value = s.lowCapKbps.toString(),
+                    onValueChange = { t -> t.filter { it.isDigit() }.take(7).toIntOrNull()?.let { v -> vm.updateSettings { it.copy(lowCapKbps = v.coerceAtLeast(1)) } } },
+                    label = { Text("Low cap (KB/s)") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                )
+                SliderRow("Low connections", s.lowConnections, 1..8) { v -> vm.updateSettings { it.copy(lowConnections = v) } }
+                OutlinedTextField(
+                    value = s.snailCapKbps.toString(),
+                    onValueChange = { t -> t.filter { it.isDigit() }.take(7).toIntOrNull()?.let { v -> vm.updateSettings { it.copy(snailCapKbps = v.coerceAtLeast(1)) } } },
+                    label = { Text("Snail cap (KB/s)") }, singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                )
+                SliderRow("Snail connections", s.snailConnections, 1..4) { v -> vm.updateSettings { it.copy(snailConnections = v) } }
+            }
             Section("Connections") {
                 SliderRow("Connections per download", s.parts, 1..16) { v -> vm.updateSettings { it.copy(parts = v) } }
                 SliderRow("Max connections per server", s.maxPerServer, 1..16) { v -> vm.updateSettings { it.copy(maxPerServer = v) } }
-                SliderRow("Simultaneous downloads", s.maxSimultaneous, 1..10) { v -> vm.updateSettings { it.copy(maxSimultaneous = v) } }
+                SliderRow("Simultaneous downloads", s.maxSimultaneous, 1..32) { v -> vm.updateSettings { it.copy(maxSimultaneous = v) } }
                 SwitchRow("Adaptive connections", "Adds connections while total speed keeps rising", s.adaptive) { v -> vm.updateSettings { it.copy(adaptive = v) } }
                 SliderRow("Retries", s.retryCount, 0..20) { v -> vm.updateSettings { it.copy(retryCount = v) } }
                 SliderRow("Retry delay", s.retryDelaySec, 1..60, " s") { v -> vm.updateSettings { it.copy(retryDelaySec = v) } }

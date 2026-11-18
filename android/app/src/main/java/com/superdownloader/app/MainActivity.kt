@@ -15,6 +15,8 @@ import androidx.biometric.BiometricPrompt
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.superdownloader.app.engine.extractUrls
 import com.superdownloader.app.ui.AddPrefill
@@ -35,12 +37,10 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        if (Build.VERSION.SDK_INT < 29 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
-        ) storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        // Permissions are requested only when first needed (when a download is added).
+        lifecycleScope.launch {
+            vm.needPermissions.collect { need -> if (need) { requestRuntimePermissions(); vm.needPermissions.value = false } }
+        }
         handleIntent(intent)
         setContent {
             val s by vm.settings.collectAsStateWithLifecycle()
@@ -50,6 +50,19 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    private var askedPermissions = false
+
+    private fun requestRuntimePermissions() {
+        if (askedPermissions) return
+        askedPermissions = true
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        else if (Build.VERSION.SDK_INT < 29 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+        ) storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIntent(intent)
@@ -57,6 +70,8 @@ class MainActivity : FragmentActivity() {
 
     private fun handleIntent(i: Intent?) {
         if (i == null) return
+        val change = i.getLongExtra("change_link", -1)
+        if (change >= 0) { vm.changeLinkFor.value = change; return }
         val detail = i.getLongExtra("open_detail", -1)
         if (detail >= 0) { openDetail.value = detail; return }
         when (i.action) {

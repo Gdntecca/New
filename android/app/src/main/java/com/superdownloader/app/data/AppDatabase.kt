@@ -77,7 +77,7 @@ abstract class DownloadDao {
     }
 }
 
-@Database(entities = [DownloadEntity::class, SegmentEntity::class], version = 1, exportSchema = false)
+@Database(entities = [DownloadEntity::class, SegmentEntity::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun dao(): DownloadDao
 

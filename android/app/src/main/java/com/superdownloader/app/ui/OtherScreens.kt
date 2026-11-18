@@ -143,7 +143,6 @@ fun StatsScreen(vm: MainViewModel, onBack: () -> Unit) {
 @Composable
 fun PrivateScreen(vm: MainViewModel, onBack: () -> Unit, push: (Screen) -> Unit) {
     val all by vm.downloads.collectAsStateWithLifecycle()
-    val live by vm.live.collectAsStateWithLifecycle()
     val items = all.filter { it.isPrivate }
     Scaffold(containerColor = MaterialTheme.colorScheme.background, topBar = { SimpleTop("Private folder", onBack) }) { pad ->
         if (items.isEmpty()) {
@@ -156,7 +155,10 @@ fun PrivateScreen(vm: MainViewModel, onBack: () -> Unit, push: (Screen) -> Unit)
             }
         } else {
             LazyColumn(Modifier.padding(pad)) {
-                items(items, key = { it.id }) { e -> DownloadRow(vm, e, live[e.id], onOpen = { push(Screen.Detail(e.id)) }, push = push) }
+                items(items, key = { it.id }) { e ->
+                    DownloadRow(vm, e, selected = false, selectionMode = false, expanded = false,
+                        onClick = { push(Screen.Detail(e.id)) }, onLongClick = {}, push = push)
+                }
             }
         }
     }
