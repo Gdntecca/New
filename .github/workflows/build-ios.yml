@@ -1,0 +1,89 @@
+name: iOS IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'macOS runner label'
+        type: string
+        default: macos-15-intel
+      publish:
+        description: 'Publish the IPA to the v0.0.1-pre-alpha pre-release'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  ipa:
+    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          xcodebuild -version
+
+      - name: Unit tests (shared logic)
+        working-directory: ios/SDCore
+        run: swift test
+
+      - name: Generate project
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Build (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project SuperDownloader.xcodeproj \
+            -scheme SuperDownloader \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/SuperDownloader.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            | tee "$RUNNER_TEMP/xcodebuild.log" | grep -E "error:|warning: unre|BUILD|ARCHIVE" || true
+          test -d "$RUNNER_TEMP/SuperDownloader.xcarchive/Products/Applications/SuperDownloader.app"
+
+      - name: Show compile errors
+        if: failure()
+        run: grep -E "error:" "$RUNNER_TEMP/xcodebuild.log" | head -100 || true
+
+      - name: Package IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/ipa/Payload" ../dist
+          cp -R "$RUNNER_TEMP/SuperDownloader.xcarchive/Products/Applications/SuperDownloader.app" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry SuperDownloader-pre-alpha.ipa Payload)
+          cp "$RUNNER_TEMP/ipa/SuperDownloader-pre-alpha.ipa" ../dist/
+          ls -la ../dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SuperDownloader-pre-alpha-ipa
+          path: dist/SuperDownloader-pre-alpha.ipa
+
+      - name: Publish pre-release
+        if: ${{ inputs.publish }}
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view v0.0.1-pre-alpha >/dev/null 2>&1; then
+            gh release upload v0.0.1-pre-alpha dist/SuperDownloader-pre-alpha.ipa --clobber
+          else
+            gh release create v0.0.1-pre-alpha dist/SuperDownloader-pre-alpha.ipa --prerelease \
+              --title "Super Downloader 0.0.1 Pre-alpha" \
+              --notes "Pre-alpha build. Unfinished; expect bugs. The iOS IPA is unsigned: install it with AltStore, Sideloadly or TrollStore."
+          fi
