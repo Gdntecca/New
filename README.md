@@ -19,6 +19,8 @@ Super Downloader grabs any file from any link, fast. It splits each download int
 - **Extras**: batch downloads, a link grabber for pages, QR code links, checksum checks (MD5 and SHA-256), play while downloading, auto-unzip, a private Face ID or fingerprint folder, a home-screen widget, and download stats.
 
 ## Download
+> **Status:** the Android app is in **pre-alpha** (version 0.0.1-pre-alpha). It is unfinished and may have bugs.
+
 Get the latest APK (Android) and IPA (iPhone) from the **Releases** page.
 
 - **Android**: open the APK and allow installing from this source.

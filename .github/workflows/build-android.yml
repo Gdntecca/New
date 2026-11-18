@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Publish the APK to release v1.0.0'
+        description: 'Publish the APK as a pre-release (v0.0.1-pre-alpha)'
         type: boolean
         default: false
 
@@ -51,24 +51,24 @@ jobs:
       - name: Collect APK
         run: |
           mkdir -p ../dist
-          cp app/build/outputs/apk/release/app-release.apk ../dist/SuperDownloader.apk
+          cp app/build/outputs/apk/release/app-release.apk ../dist/SuperDownloader-pre-alpha.apk
           ls -la ../dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SuperDownloader-apk
-          path: dist/SuperDownloader.apk
+          name: SuperDownloader-pre-alpha-apk
+          path: dist/SuperDownloader-pre-alpha.apk
 
-      - name: Publish to release v1.0.0
+      - name: Publish pre-release v0.0.1-pre-alpha
         if: ${{ inputs.publish }}
         working-directory: .
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view v1.0.0 >/dev/null 2>&1; then
-            gh release upload v1.0.0 dist/SuperDownloader.apk --clobber
+          if gh release view v0.0.1-pre-alpha >/dev/null 2>&1; then
+            gh release upload v0.0.1-pre-alpha dist/SuperDownloader-pre-alpha.apk --clobber
           else
-            gh release create v1.0.0 dist/SuperDownloader.apk --title "Super Downloader v1.0.0" \
-              --notes "Super Downloader 1.0.0: Android APK (signed with a CI key) and unsigned iOS IPA for sideloading." \
-            || gh release upload v1.0.0 dist/SuperDownloader.apk --clobber
+            gh release create v0.0.1-pre-alpha dist/SuperDownloader-pre-alpha.apk --prerelease \
+              --title "Super Downloader 0.0.1 Pre-alpha (Android)" \
+              --notes "Pre-alpha Android build. Unfinished; expect bugs."
           fi
