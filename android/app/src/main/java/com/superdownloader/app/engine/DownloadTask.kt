@@ -1,4 +1,3 @@
-// Super Downloader — Created by Tez
 package com.superdownloader.app.engine
 
 import android.net.Uri

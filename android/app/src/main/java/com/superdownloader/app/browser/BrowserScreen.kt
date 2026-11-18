@@ -1,4 +1,3 @@
-// Super Downloader — Created by Tez
 @file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 
 package com.superdownloader.app.browser

@@ -27,8 +27,6 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Create signing key (CI only)
@@ -36,7 +34,7 @@ jobs:
           keytool -genkeypair -v -keystore "$RUNNER_TEMP/sd.jks" -storetype JKS \
             -alias superdownloader -keyalg RSA -keysize 2048 -validity 10000 \
             -storepass sdpass123 -keypass sdpass123 \
-            -dname "CN=Super Downloader, OU=Tez, O=Super Downloader, C=US"
+            -dname "CN=Super Downloader, O=Super Downloader, C=US"
           echo "SD_KEYSTORE=$RUNNER_TEMP/sd.jks" >> "$GITHUB_ENV"
           echo "SD_KEYSTORE_PASSWORD=sdpass123" >> "$GITHUB_ENV"
           echo "SD_KEY_ALIAS=superdownloader" >> "$GITHUB_ENV"
@@ -67,6 +65,6 @@ jobs:
             gh release upload v1.0.0 dist/SuperDownloader.apk --clobber
           else
             gh release create v1.0.0 dist/SuperDownloader.apk --title "Super Downloader v1.0.0" \
-              --notes "Super Downloader 1.0.0. Android APK (signed with a CI key) and unsigned iOS IPA for sideloading. Created by Tez." \
+              --notes "Super Downloader 1.0.0: Android APK (signed with a CI key) and unsigned iOS IPA for sideloading." \
             || gh release upload v1.0.0 dist/SuperDownloader.apk --clobber
           fi

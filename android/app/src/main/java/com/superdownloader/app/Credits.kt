@@ -1,4 +1,3 @@
-// Super Downloader — Created by Tez
 package com.superdownloader.app
 
 /** Author credit kept in the binary (see proguard-rules.pro). Not shown in the UI. */
